@@ -1,0 +1,13 @@
+{
+  "domain": "twitch",
+  "name": "Twitch",
+  "codeowners": ["@spencer012"],
+  "config_flow": true,
+  "dependencies": ["application_credentials"],
+  "documentation": "https://www.home-assistant.io/integrations/twitch",
+  "integration_type": "service",
+  "iot_class": "cloud_push",
+  "loggers": ["twitch"],
+  "requirements": ["twitchAPI==4.5.0"],
+  "version": "0.1.0"
+}
