@@ -15,5 +15,6 @@ OAUTH2_TOKEN = "https://id.twitch.tv/oauth2/token"
 
 DOMAIN = "twitch"
 CONF_CHANNELS = "channels"
+CONF_PRIORITY_CHANNELS = "priority_channels"
 
 OAUTH_SCOPES = [AuthScope.USER_READ_SUBSCRIPTIONS, AuthScope.USER_READ_FOLLOWS]

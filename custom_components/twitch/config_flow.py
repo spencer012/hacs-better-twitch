@@ -26,7 +26,13 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
     async_get_config_entry_implementation,
 )
 
-from .const import CONF_CHANNELS, DOMAIN, LOGGER, OAUTH_SCOPES
+from .const import (
+    CONF_CHANNELS,
+    CONF_PRIORITY_CHANNELS,
+    DOMAIN,
+    LOGGER,
+    OAUTH_SCOPES,
+)
 
 CHANNEL_PATTERN = re.compile(r"^[a-z0-9_]{3,25}$")
 
@@ -71,6 +77,35 @@ def _format_channels(channels: list[str]) -> str:
     return "\n".join(channels)
 
 
+def _find_unwatched_priority_channels(
+    channels: list[str], priority_channels: list[str]
+) -> list[str]:
+    """Return priority channels that are not in the watched channel list."""
+    watched_channels = set(channels)
+    return [
+        channel for channel in priority_channels if channel not in watched_channels
+    ]
+
+
+def _parse_channel_options(
+    user_input: dict[str, Any], errors: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """Parse channel options and assign validation errors to the right field."""
+    try:
+        channels = _parse_channels(user_input[CONF_CHANNELS])
+    except ValueError as err:
+        errors[CONF_CHANNELS] = "invalid_channel"
+        raise
+
+    try:
+        priority_channels = _parse_channels(user_input.get(CONF_PRIORITY_CHANNELS, ""))
+    except ValueError as err:
+        errors[CONF_PRIORITY_CHANNELS] = "invalid_channel"
+        raise
+
+    return channels, priority_channels
+
+
 async def _async_get_twitch_client(
     hass: HomeAssistant,
     entry_or_flow: ConfigEntry | OAuth2FlowHandler,
@@ -107,13 +142,18 @@ async def _async_validate_channels(
     return users, missing
 
 
-def _channels_schema(default: str = "") -> vol.Schema:
+def _channels_schema(default: str = "", priority_default: str = "") -> vol.Schema:
     """Return the channel editor schema."""
     return vol.Schema(
         {
             vol.Required(CONF_CHANNELS, default=default): selector.TextSelector(
                 selector.TextSelectorConfig(multiline=True)
-            )
+            ),
+            vol.Optional(
+                CONF_PRIORITY_CHANNELS, default=priority_default
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
         }
     )
 
@@ -191,24 +231,37 @@ class OAuth2FlowHandler(
 
         if user_input is not None:
             try:
-                channels = _parse_channels(user_input[CONF_CHANNELS])
+                channels, priority_channels = _parse_channel_options(
+                    user_input, errors
+                )
             except ValueError as err:
-                errors[CONF_CHANNELS] = "invalid_channel"
                 description_placeholders["channel"] = str(err)
             else:
-                client = await _async_get_twitch_client(
-                    self.hass, self, self._oauth_data
+                unwatched_priority_channels = _find_unwatched_priority_channels(
+                    channels, priority_channels
                 )
-                _, missing = await _async_validate_channels(client, channels)
-                if missing:
-                    errors[CONF_CHANNELS] = "unknown_channels"
-                    description_placeholders["channels"] = ", ".join(missing)
-                else:
-                    return self.async_create_entry(
-                        title=self._title,
-                        data=self._oauth_data,
-                        options={CONF_CHANNELS: channels},
+                if unwatched_priority_channels:
+                    errors[CONF_PRIORITY_CHANNELS] = "unwatched_priority_channels"
+                    description_placeholders["channels"] = ", ".join(
+                        unwatched_priority_channels
                     )
+                else:
+                    client = await _async_get_twitch_client(
+                        self.hass, self, self._oauth_data
+                    )
+                    _, missing = await _async_validate_channels(client, channels)
+                    if missing:
+                        errors[CONF_CHANNELS] = "unknown_channels"
+                        description_placeholders["channels"] = ", ".join(missing)
+                    else:
+                        return self.async_create_entry(
+                            title=self._title,
+                            data=self._oauth_data,
+                            options={
+                                CONF_CHANNELS: channels,
+                                CONF_PRIORITY_CHANNELS: priority_channels,
+                            },
+                        )
 
         return self.async_show_form(
             step_id="channels",
@@ -244,41 +297,60 @@ class OptionsFlowHandler(OptionsFlowWithReload):
 
         if user_input is not None:
             try:
-                channels = _parse_channels(user_input[CONF_CHANNELS])
+                channels, priority_channels = _parse_channel_options(
+                    user_input, errors
+                )
             except ValueError as err:
-                errors[CONF_CHANNELS] = "invalid_channel"
                 description_placeholders["channel"] = str(err)
             else:
-                session = OAuth2Session(
-                    self.hass,
-                    self.config_entry,
-                    cast(
-                        LocalOAuth2Implementation,
-                        await async_get_config_entry_implementation(
-                            self.hass, self.config_entry
-                        ),
-                    ),
+                unwatched_priority_channels = _find_unwatched_priority_channels(
+                    channels, priority_channels
                 )
-                await session.async_ensure_token_valid()
-                client = await _async_get_twitch_client(
-                    self.hass, self.config_entry, {CONF_TOKEN: session.token}
-                )
-                _, missing = await _async_validate_channels(client, channels)
-                if missing:
-                    errors[CONF_CHANNELS] = "unknown_channels"
-                    description_placeholders["channels"] = ", ".join(missing)
-                else:
-                    return self.async_create_entry(
-                        title=self.config_entry.title,
-                        data={CONF_CHANNELS: channels},
+                if unwatched_priority_channels:
+                    errors[CONF_PRIORITY_CHANNELS] = "unwatched_priority_channels"
+                    description_placeholders["channels"] = ", ".join(
+                        unwatched_priority_channels
                     )
+                else:
+                    session = OAuth2Session(
+                        self.hass,
+                        self.config_entry,
+                        cast(
+                            LocalOAuth2Implementation,
+                            await async_get_config_entry_implementation(
+                                self.hass, self.config_entry
+                            ),
+                        ),
+                    )
+                    await session.async_ensure_token_valid()
+                    client = await _async_get_twitch_client(
+                        self.hass, self.config_entry, {CONF_TOKEN: session.token}
+                    )
+                    _, missing = await _async_validate_channels(client, channels)
+                    if missing:
+                        errors[CONF_CHANNELS] = "unknown_channels"
+                        description_placeholders["channels"] = ", ".join(missing)
+                    else:
+                        return self.async_create_entry(
+                            title=self.config_entry.title,
+                            data={
+                                CONF_CHANNELS: channels,
+                                CONF_PRIORITY_CHANNELS: priority_channels,
+                            },
+                        )
 
         current_channels = cast(
             list[str], self.config_entry.options.get(CONF_CHANNELS, [])
         )
+        current_priority_channels = cast(
+            list[str], self.config_entry.options.get(CONF_PRIORITY_CHANNELS, [])
+        )
         return self.async_show_form(
             step_id="init",
-            data_schema=_channels_schema(_format_channels(current_channels)),
+            data_schema=_channels_schema(
+                _format_channels(current_channels),
+                _format_channels(current_priority_channels),
+            ),
             errors=errors,
             description_placeholders=description_placeholders,
         )

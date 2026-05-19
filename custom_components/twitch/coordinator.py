@@ -26,7 +26,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.config_entry_oauth2_flow import OAuth2Session
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_CHANNELS, DOMAIN, LOGGER, OAUTH_SCOPES
+from .const import (
+    CONF_CHANNELS,
+    CONF_PRIORITY_CHANNELS,
+    DOMAIN,
+    LOGGER,
+    OAUTH_SCOPES,
+)
 
 type TwitchConfigEntry = ConfigEntry[TwitchCoordinator]
 
@@ -36,6 +42,11 @@ EVENTSUB_EXCEPTIONS = (
     EventSubSubscriptionTimeout,
     TwitchBackendException,
     UnauthorizedException,
+)
+EVENTSUB_MAX_TOTAL_COST = 10
+EVENTSUB_STREAM_SUBSCRIPTIONS_PER_CHANNEL = 2
+EVENTSUB_MAX_STREAM_CHANNELS = (
+    EVENTSUB_MAX_TOTAL_COST // EVENTSUB_STREAM_SUBSCRIPTIONS_PER_CHANNEL
 )
 
 
@@ -86,7 +97,7 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
             hass,
             LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(minutes=5),
+            update_interval=timedelta(minutes=1),
             config_entry=entry,
         )
 
@@ -207,19 +218,61 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
         eventsub = EventSubWebsocket(self.twitch)
         try:
             await self.hass.async_add_executor_job(eventsub.start)
-            for channel_id in self.users:
-                await eventsub.listen_stream_online(
+            subscribed_channels = 0
+            skipped_channels: list[str] = []
+            for channel_id, channel in self._ordered_eventsub_users():
+                if subscribed_channels >= EVENTSUB_MAX_STREAM_CHANNELS:
+                    skipped_channels.append(channel.display_name)
+                    continue
+
+                online_topic_id = await eventsub.listen_stream_online(
                     channel_id, self._async_stream_event_callback(channel_id, True)
                 )
-                await eventsub.listen_stream_offline(
-                    channel_id, self._async_stream_event_callback(channel_id, False)
-                )
+                try:
+                    await eventsub.listen_stream_offline(
+                        channel_id,
+                        self._async_stream_event_callback(channel_id, False),
+                    )
+                except EVENTSUB_EXCEPTIONS:
+                    await eventsub.unsubscribe_topic(online_topic_id)
+                    raise
+                subscribed_channels += 1
         except EVENTSUB_EXCEPTIONS as exc:
             LOGGER.warning("Could not start Twitch EventSub websocket: %s", exc)
             await self._async_stop_eventsub(eventsub)
             return
 
+        if skipped_channels:
+            LOGGER.warning(
+                "Skipped Twitch EventSub websocket subscriptions for %s because "
+                "Twitch limits websocket subscription cost; these channels will "
+                "update on the regular polling interval",
+                ", ".join(skipped_channels),
+            )
+
         self.eventsub = eventsub
+
+    def _ordered_eventsub_users(self) -> list[tuple[str, TwitchUser]]:
+        """Return users with configured priority channels first."""
+        priority_channels = self.config_entry.options.get(CONF_PRIORITY_CHANNELS, [])
+        channel_ids_by_login = {
+            channel.login.lower(): channel_id
+            for channel_id, channel in self.users.items()
+        }
+        priority_channel_ids = [
+            channel_ids_by_login[channel]
+            for channel in priority_channels
+            if channel in channel_ids_by_login
+        ]
+
+        ordered_channel_ids = priority_channel_ids + [
+            channel_id
+            for channel_id in self.users
+            if channel_id not in priority_channel_ids
+        ]
+        return [
+            (channel_id, self.users[channel_id]) for channel_id in ordered_channel_ids
+        ]
 
     def _async_stream_event_callback(
         self, channel_id: str, is_streaming: bool
