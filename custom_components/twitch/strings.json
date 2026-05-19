@@ -25,7 +25,7 @@
           "channels": "Channels",
           "priority_channels": "Priority channels"
         },
-        "description": "Enter one Twitch channel login per line. Twitch channel URLs are also accepted. Priority channels are optional; they get the limited realtime websocket updates first and must also be listed as channels.",
+        "description": "Enter one Twitch channel login per line. Twitch channel URLs are also accepted. Priority channels are optional and must also be listed as channels. Twitch limits realtime websocket subscriptions, so only the first few channels can get instant online/offline updates. Priority channels are selected for those realtime slots first, in the order listed. Any remaining channels still get sensors and update by polling, up to 1 minute later.",
         "title": "Twitch channels"
       },
       "reauth_confirm": {
@@ -46,7 +46,7 @@
           "channels": "Channels",
           "priority_channels": "Priority channels"
         },
-        "description": "Enter one Twitch channel login per line. Removing a channel here removes its sensor after the integration reloads. Priority channels are optional; they get the limited realtime websocket updates first and must also be listed as channels.",
+        "description": "Enter one Twitch channel login per line. Removing a channel here removes its sensor after the integration reloads. Priority channels are optional and must also be listed as channels. Twitch limits realtime websocket subscriptions, so only the first few channels can get instant online/offline updates. Priority channels are selected for those realtime slots first, in the order listed. Any remaining channels still get sensors and update by polling, up to 1 minute later.",
         "title": "Twitch channels"
       }
     }
