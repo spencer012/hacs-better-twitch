@@ -48,6 +48,8 @@ EVENTSUB_STREAM_SUBSCRIPTIONS_PER_CHANNEL = 2
 EVENTSUB_MAX_STREAM_CHANNELS = (
     EVENTSUB_MAX_TOTAL_COST // EVENTSUB_STREAM_SUBSCRIPTIONS_PER_CHANNEL
 )
+TWITCH_BACKEND_RETRY_ATTEMPTS = 3
+TWITCH_BACKEND_RETRY_DELAY = 2
 
 
 def chunk_list[T](items: list[T], chunk_size: int) -> list[list[T]]:
@@ -103,6 +105,17 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
 
     async def _async_setup(self) -> None:
         """Resolve configured channel logins."""
+        try:
+            await self._async_retry_twitch_backend(
+                self._async_setup_once, "setting up Twitch channels"
+            )
+        except TwitchBackendException as exc:
+            raise UpdateFailed(
+                f"Twitch backend error while setting up channels: {exc}"
+            ) from exc
+
+    async def _async_setup_once(self) -> None:
+        """Resolve configured channel logins once."""
         channels = self.config_entry.options.get(CONF_CHANNELS, [])
         self.users = {}
 
@@ -127,6 +140,17 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
 
     async def _async_update_data(self) -> dict[str, TwitchUpdate]:
         """Update all configured channel data."""
+        try:
+            return await self._async_retry_twitch_backend(
+                self._async_update_data_once, "refreshing Twitch data"
+            )
+        except TwitchBackendException as exc:
+            raise UpdateFailed(
+                f"Twitch backend error while refreshing data: {exc}"
+            ) from exc
+
+    async def _async_update_data_once(self) -> dict[str, TwitchUpdate]:
+        """Update all configured channel data once."""
         await self._async_set_user_authentication()
 
         streams: dict[str, Stream] = {}
@@ -144,6 +168,30 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
             )
         )
         return dict(zip(self.users, updates, strict=True))
+
+    async def _async_retry_twitch_backend[T](
+        self, action: Callable[[], Awaitable[T]], description: str
+    ) -> T:
+        """Retry transient Twitch backend failures before giving up."""
+        for attempt in range(1, TWITCH_BACKEND_RETRY_ATTEMPTS + 1):
+            try:
+                return await action()
+            except TwitchBackendException as exc:
+                if attempt == TWITCH_BACKEND_RETRY_ATTEMPTS:
+                    raise
+
+                LOGGER.warning(
+                    "Twitch backend error while %s; retrying in %s seconds "
+                    "(attempt %s of %s): %s",
+                    description,
+                    TWITCH_BACKEND_RETRY_DELAY * attempt,
+                    attempt + 1,
+                    TWITCH_BACKEND_RETRY_ATTEMPTS,
+                    exc,
+                )
+                await asyncio.sleep(TWITCH_BACKEND_RETRY_DELAY * attempt)
+
+        raise RuntimeError("unreachable")
 
     async def async_refresh_channel(self, channel_id: str) -> None:
         """Refresh a single channel after a stream event."""
